@@ -7,12 +7,13 @@ uuid="$3"
 paths="$4"
 
 install_xray() {
+  echo "Installing Xray..."
   bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install --version 1.8.23
 }
 
 install_dependencies() {
-  echo -e "Installing and configuring dependencies..."
-  apt update 
+  echo "Installing dependencies..."
+  apt update
   apt install -y screen unzip socat curl ufw
 }
 
@@ -21,21 +22,41 @@ disable_firewall() {
   ufw disable || true
 }
 
-configure_xray() {
+generate_certificate() {
+  echo "Installing acme.sh and generating certificate..."
+  curl https://get.acme.sh | sh
+  export PATH="$HOME/.acme.sh:$PATH"
+
+  echo "Issuing certificate for $domain via standalone mode..."
+  ~/.acme.sh/acme.sh --issue -d "$domain" --standalone --keylength ec-256
+
+  echo "Installing certificate to /etc/ssl/xray/..."
   mkdir -p /etc/ssl/xray
-  cd /usr/local/share/xray/
+  ~/.acme.sh/acme.sh --install-cert -d "$domain" \
+    --key-file /etc/ssl/xray/key.pem \
+    --fullchain-file /etc/ssl/xray/cert.pem
+
+  chmod 600 /etc/ssl/xray/key.pem
+  chmod 644 /etc/ssl/xray/cert.pem
+}
+
+configure_xray() {
+  echo "Configuring Xray..."
+  mkdir -p /usr/local/share/xray
+  cd /usr/local/share/xray
   rm -rf *
-  wget -q http://src.mouss.net/data/geoip.dat
-  wget -q http://src.mouss.net/data/geosite.dat
+  wget -q http://src.mouss.net/data/geoip.dat || true
+  wget -q http://src.mouss.net/data/geosite.dat || true
   cd ~
-  systemctl stop xray.service
-  rm -rf /usr/local/etc/xray/config.json
+
+  systemctl stop xray.service || true
+  rm -f /usr/local/etc/xray/config.json
 
   cat >/usr/local/etc/xray/config.json <<-EOF
 {
   "inbounds": [
     {
-      "port": 2096,
+      "port": 443,
       "protocol": "vless",
       "settings": {
         "clients": [
@@ -64,7 +85,7 @@ configure_xray() {
           "headers": {}
         }
       },
-      "tag": "inbound-2096",
+      "tag": "inbound-443",
       "sniffing": {
         "enabled": false,
         "destOverride": ["http", "tls", "quic", "fakedns"]
@@ -106,21 +127,12 @@ configure_xray() {
 }
 EOF
 
-  echo "Generating client config..."
+  echo "Generating client URI..."
   cat >~/free.uri <<-EOF
-vless://$uuid@$nsdomain:2096?encryption=none&security=tls&sni=$domain&alpn=http%2F1.1&fp=chrome&allowInsecure=1&type=ws&host=$domain&path=$paths#free-with-proxy-config
+vless://$uuid@$nsdomain:443?encryption=none&security=tls&sni=$domain&alpn=http%2F1.1&fp=chrome&type=ws&host=$nsdomain&path=$paths#free-with-proxy-config
 EOF
 
-  systemctl restart xray.service
-}
-
-generate_certificate() {
-  echo "Installing acme.sh and generating certificate..."
-  curl https://get.acme.sh | sh
-  ~/.acme.sh/acme.sh --issue -d "$domain" --standalone --keylength ec-256
-  ~/.acme.sh/acme.sh --install-cert -d "$domain" \
-    --key-file /etc/ssl/xray/key.pem \
-    --fullchain-file /etc/ssl/xray/cert.pem
+  systemctl restart xray.service || true
 }
 
 # --- main ---
@@ -130,4 +142,6 @@ install_xray
 generate_certificate
 configure_xray
 
-echo "Done. Xray configured and firewall disabled (all ports open)."
+echo "Done. Xray installed with WS+TLS on port 443."
+echo "Check /etc/ssl/xray/cert.pem and /usr/local/etc/xray/config.json"
+echo "Client URI saved in ~/free.uri"
